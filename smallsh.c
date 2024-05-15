@@ -8,6 +8,9 @@ Date: 05-14-2024
 
 Description:
 
+Build Using:
+gcc --std=gnu99 -o smallsh smallsh.c
+
 Program goals:
 
     Provide a prompt for running commands
@@ -81,15 +84,15 @@ int main(){
 
     test_replaceToken();
 
-    // while(1){
-    //     // Parse command 
-    //     Command * command = parseCommand();
-    //     if(command->skip){
-    //         free(command);
-    //         continue;
-    //     }
-    //     execCommand(command);
-    // }
+    while(1){
+        // Parse command 
+        Command * command = parseCommand();
+        if(command->skip){
+            free(command);
+            continue;
+        }
+        execCommand(command);
+    }
 
     
     return 0;
@@ -117,29 +120,27 @@ Command * parseCommand(){
 
     // Represents command given to shell in string form (max size)
     char commandStr[MAX_CHARS];
-    fgets(commandStr, MAX_CHARS, stdin);    // Gets command and saves in string variable
+    fgets(commandStr, MAX_CHARS, stdin);        // Gets command and saves in string variable
 
-    char * token = strtok(commandStr , " ");// Gets token (argument) based on a space (' ') as the delimiter
+    char * token = strtok(commandStr , " ");    // Gets token (argument) based on a space (' ') as the delimiter
     
-    // Checks if comment or blank
+    // Checks if comment or blank - only applicable to first argument (command)
     if(token[0] == "#" || token[0] == "\n"){
         command->skip = 1;
         return command;
     }
-        
-    
 
     // Continue until we reach the end (cannot be NULL, or ending character '\0')
     while(token != NULL || strcmp(token, "\0" != 0)){
-        
+        // Check if token has variable that needs to be replaced
         char * position = strstr(token, "$$");
         if(position != NULL){
-        checkExpansion(token, position);
+            replaceToken(token, position);
         }
         // Copies token to command argument array
         strncpy(command->command[command->argCount], token, strlen(token));
-        command->argCount++;                // Increment arg count
-        token = strtok(NULL, " ");          // Update token to point to next
+        command->argCount++;                    // Increment arg count
+        token = strtok(NULL, " ");              // Update token to point to next
     }
     
     // Checks if meant to executed in background
@@ -171,38 +172,48 @@ void execCommand(Command * command){
 }
 
 /* ----------------------------------------
-    Function: 
+    Function: replaceToken
 ///////////////////////////////////////////
-Desc: 
+Desc: Takes pointer, token, and replaces the location
+specified by the substring pointer with the pid.
+It checks for multiple occurances.
 
 Params:
+token: char * , string to change.
+substring: char * , part of string to change
 ---------------------------------------- */
-char* replaceToken(char *token, char *substring) {
-    char pid_str[20]; // Buffer to hold the string representation of the process ID
-    sprintf(pid_str, "%d", getpid()); // Convert process ID to string
+char* replaceToken(char *token, char *substring){
+    char pidStr[20];                        // String representation for process ID (pid)
 
-    // Calculate the length of the substring to be replaced
-    int sub_len = strlen(substring);
-    int pid_len = strlen(pid_str);
+    sprintf(pidStr, "%d", getpid());        // Convert process ID to string
 
-    // Calculate the length of the new token
-    int new_len = strlen(token) - sub_len + pid_len;
+    int pidLen = strlen(pidStr);            // Gets length of pid now that it's in string form.
 
-    // Shift the rest of the string to make space for the PID
-    memmove(substring + pid_len, substring + sub_len, strlen(substring + sub_len) + 1);
+    int restLen = strlen(substring + 2);    // Calculate the length of the rest of the token after the substring
 
-    // Copy the PID string into the token
-    strncpy(substring, pid_str, pid_len);
 
-    char * pos = strsts(token , "$$");
-    if(pos != NULL){
-        return replaceToken(token, pos);
+    /*
+    Easy to get confused here, this is what's happening:
+    destination =   'substring + pidLen' where the characters after the $$ are being copied (memory address)
+    source      =   'substring + 2'  directly after the $$, what is being copied over (memory address)
+    size        =   'restLen + 1' this is the number of bytes to copy over , aka size of the remaining chars
+    */
+    memmove(substring + pidLen, substring + 2, restLen + 1);
+
+    
+    strncpy(substring, pidStr, pidLen);     // Copy the process ID string into the token, in the new space we just created.
+
+    // Check again to see if there are anymore, if so, recurse.
+    char *newSubstring = strstr(token, "$$");
+    if (newSubstring != NULL) {
+        replaceToken(token, newSubstring);
     }
-    return token;
 }
+
+
 // Tester function 
 void test_replaceToken() {
-    char token[] = "TEST$$TEST";
+    char token[] = "TEST$$TEST$$$";
     char *substring = strstr(token, "$$");
     if (substring != NULL) {
         printf("Original token: %s\n", token);
