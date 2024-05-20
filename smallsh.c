@@ -1,8 +1,9 @@
 /*
-Assignment 3: smallsh (Portfolio Project)
 Author: Judah Jackson
 OSU email: jacksjud@oregonstate.edu
 GitHub: jacksjud
+
+Assignment 3: smallsh (Portfolio Project)
 CS374 - Operating Systems 1 (OS1)
 Date: 05-14-2024
 
@@ -13,10 +14,10 @@ gcc --std=gnu99 -o smallsh smallsh.c
 
 Program goals:
 
-    Provide a prompt for running commands
-    Handle blank lines and comments, which are lines beginning with the # character
-    Provide expansion for the variable $$
-    Execute 3 commands exit, cd, and status via code built into the shell
+X   Provide a prompt for running commands
+X   Handle blank lines and comments, which are lines beginning with the # character
+X   Provide expansion for the variable $$
+X   Execute 3 commands exit, cd, and status via code built into the shell
     Execute other commands by creating new processes using a function from the exec family of functions
     Support input and output redirection
     Support running commands in foreground and background processes
@@ -37,10 +38,14 @@ Dev Notes:
 #include <stdlib.h>
 #include <string.h>
 #include <signal.h>
+#include <fcntl.h>
 
 /* Definitions */
 #define MAX_CHARS 2048
 #define MAX_ARGS 512
+
+/* == DEBUG == */
+// #define DEBUG
 
 /* Struct(s) */
 
@@ -53,10 +58,15 @@ typedef struct Command {
 } Command;
 
 /* Function Prototypes*/
-
+void handleSIGINT(int signal);
+void configSIGINT();
+void handleSIGTSTP(int signal);
+void configSIGTSTP();
 Command * parseCommand();
 char* replaceToken(char *, char *);
 void execCommand(Command *);
+void inputRedirect(Command *);
+void outputRedirect(Command *);
 void execExit();
 void execCd(Command *);
 void execStatus(Command *);
@@ -65,6 +75,10 @@ void freeCommand(Command *);
 char * checkExpansion(char *, char *);
 
 void test_replaceToken();
+
+/* Global Variables */
+int lastForegroundStatus = 0;
+int foregroundOnlyMode = 0;
 
 
 /* ----------------------------------------
@@ -86,21 +100,139 @@ Params: N/A
 ---------------------------------------- */
 int main(){
 
-    //test_replaceToken();
+    #ifdef DEBUG
+    test_replaceToken();
+    #endif
+    configSIGINT();
+    configSIGTSTP();
+
 
     while(1){
         // Parse command 
         Command * command = parseCommand();
         if(command->skip){
-            free(command);
+            freeCommand(command);
             continue;
         }
         execCommand(command);
         freeCommand(command);
     }
-
-    
     return 0;
+}
+
+/* ----------------------------------------
+    Function: handleSIGINT
+///////////////////////////////////////////
+Desc: Makes the shell, i.e., the parent process,
+ignore SIGINT. Any children running as background 
+processes ignore SIGINT. A child running as 
+a foreground process will terminate itself when 
+it receives SIGINT. The parent does not attempt to
+terminate the foreground child process; instead 
+the foreground child (if any) terminates 
+itself on receipt of this signal. If a child 
+foreground process is killed by a signal, the 
+parent immediately prints out the number of 
+the signal that killed it's foreground child process 
+before prompting the user for the next command.
+
+Params:
+---------------------------------------- */
+void handleSIGINT(int signal){
+    if(signal == SIGINT){
+        #ifdef DEBUG
+        printf("\n == SIGINT ignored in parent process (shell): %d\n", getpid());
+        fflush(stdout);
+        #endif
+    }
+    printf("\n: ");                           // Prompt user interaction, make sure it's output
+    fflush(stdout);
+}
+
+void configSIGINT(){
+    // Initialize SIGINT_action struct to be empty
+    struct sigaction SIGINT_action = {0};
+
+    // Fill out the SIGINT_action struct
+    // Register handleSIGINT as the signal handler
+    SIGINT_action.sa_handler = handleSIGINT;
+    // Block all catchable signals while handleSIGINT is running
+    sigfillset(&SIGINT_action.sa_mask);
+    // System auto restarts
+    SIGINT_action.sa_flags = SA_RESTART;
+
+    // Install our signal handler
+    sigaction(SIGINT, &SIGINT_action, NULL);
+
+    #ifdef DEBUG
+    
+    return;
+    #endif
+}
+
+
+/* ----------------------------------------
+    Function: handleSIGTSTP
+///////////////////////////////////////////
+Desc: A CTRL-Z command from the keyboard 
+sends a SIGTSTP signal to the parent shell 
+process and all children at the same time 
+(this is a built-in part of Linux).A child, 
+if any, running as a foreground process must 
+ignore SIGTSTP. Any children running as 
+background process must ignore SIGTSTP.
+When the parent process running the shell
+receives SIGTSTP The shell must display an 
+informative message (see below) immediately 
+if it's sitting at the prompt, or immediately 
+after any currently running foreground process 
+has terminated. The shell then enters a state 
+where subsequent commands can no longer be 
+run in the background. In this state, the & 
+operator should simply be ignored, i.e., all 
+such commands are run as if they were 
+foreground processes. If the user sends SIGTSTP 
+again, then your shell will. Display another 
+informative message (see below) immediately
+after any currently running foreground process 
+terminates. The shell then returns back to the 
+normal condition where the & operator is once 
+again honored for subsequent commands, allowing 
+them to be executed in the background. See the
+example below for usage and the exact syntax 
+which you must use for these two informative 
+messages.
+
+Params:
+---------------------------------------- */
+void handleSIGTSTP(int signal){
+    if (signal == SIGTSTP) {
+        if (foregroundOnlyMode == 0) {
+            // Enter foreground-only mode
+            foregroundOnlyMode = 1;
+            printf("\nEntering foreground-only mode (& is now ignored)");
+            fflush(stdout);
+
+        } else {
+            // Exit foreground-only mode
+            foregroundOnlyMode = 0;
+            printf("\nExiting foreground-only mode");
+            fflush(stdout);
+        }
+    }
+    printf("\n: ");                           // Prompt user interaction, make sure it's output
+    fflush(stdout);
+    return;
+}
+
+void configSIGTSTP(){
+    struct sigaction SIGTSTP_action = {0};
+    SIGTSTP_action.sa_handler = handleSIGTSTP;
+    // Block all catchable signals while handleSIGINT is running
+    sigfillset(&SIGTSTP_action.sa_mask);
+    // System calls auto restart
+    SIGTSTP_action.sa_flags = SA_RESTART;
+    sigaction(SIGTSTP, &SIGTSTP_action, NULL);
 }
 
 /* ----------------------------------------
@@ -118,7 +250,7 @@ Params: N/A
 Command * parseCommand(){
     // Struct that represents a command 
     Command * command = (Command *)malloc(sizeof(Command));
-    if (command == NULL) {
+    if(command == NULL) {
         fprintf(stderr, "Memory allocation failed.\n");
         exit(EXIT_FAILURE);
     }
@@ -132,64 +264,67 @@ Command * parseCommand(){
     
     // Represents command given to shell in string form (max size)
     char commandStr[MAX_CHARS];
-    fgets(commandStr, MAX_CHARS, stdin);        // Gets command and saves in string variable
+    if(fgets(commandStr, MAX_CHARS, stdin) == NULL) {
+        freeCommand(command);
+        exit(EXIT_FAILURE); // Exit on read failure
+    }
+    commandStr[strcspn(commandStr, "\n")] = '\0'; // Remove newline
 
     char * token = strtok(commandStr , " ");    // Gets token (argument) based on a space (' ') as the delimiter
 
-
-    // Checks if comment or blank - only applicable to first argument (command)
-    if( strcmp(token, "\n") == 0 || strncmp(token , "#", 1) == 0){
+    // Check if line is skippable, mark and return if so
+    if (token == NULL || token[0] == '#') {
         command->skip = 1;
         return command;
     }
 
     // Continue until we reach the end (cannot be NULL, or ending character '\0')
-    while(token != NULL && strcmp(token, "\0") != 0){
+    while(token != NULL){
+        if(command->argCount >= MAX_ARGS) {
+            fprintf(stderr, "MAX ARGS REACHED\n");
+            freeCommand(command);
+            exit(EXIT_FAILURE);
+        }
+
+        // Allocate memory for command arg
+        command->command[command->argCount] = (char *)malloc(MAX_CHARS);
+        if(command->command[command->argCount] == NULL) {
+            fprintf(stderr, "Memory allocation failed.\n");
+            freeCommand(command);
+            exit(EXIT_FAILURE);
+        }
+
         // Check if token has variable that needs to be replaced
         char * position = strstr(token, "$$");
         if(position != NULL){
             replaceToken(token, position);
         }
 
-        if(command->argCount >= MAX_ARGS){
-            fprintf(stderr, "MAX ARGS REACHED == \n");
-            exit(EXIT_FAILURE);
-        }
-
-        // Allocate memory for command arg
-        command->command[command->argCount] = (char *)malloc(MAX_CHARS);
-        if (command->command[command->argCount] == NULL) {
-            fprintf(stderr, "Memory allocation failed.\n");
-            exit(EXIT_FAILURE);
-        }
-
-
         // Copies token to command argument array
         strncpy(command->command[command->argCount], token, MAX_ARGS - 1);
+
         //command->command[command->argCount][MAX_CHARS - 1] = '\0'; // Ensure null-termination
         command->argCount++;                    // Increment arg count
         token = strtok(NULL, " ");              // Update token to point to next
     }
 
-    command->command[command->argCount] = (char *)malloc(2);
-    strncpy(command->command[command->argCount], "\0", 2);
-    command->argCount++;
+    // Null-terminate the command array
+    command->command[command->argCount] = NULL;
 
-    
-    // Checks if meant to executed in background
-    if(strcmp(command->command[command->argCount - 1], "&") == 0 || strcmp(command->command[command->argCount - 1], "&\n") == 0){
-        printf("background! == %s", command->command[command->argCount - 1]);
-        command->background = 1;
+    // Check if background command - look for '&' symbol
+    if (command->argCount > 0 && strcmp(command->command[command->argCount - 1], "&") == 0 && foregroundOnlyMode != 1){
+        command->background = 1;                            // Mark as background
+        free(command->command[command->argCount - 1]);      // Deallocate that part of the command 
+        command->command[command->argCount - 1] = NULL;     // Make old command new pointer to NULL
+        command->argCount--;                                // Decrease argCount
     }
 
     // Checks if built in command, give appropriate code
     if(strcmp(strtok(command->command[0] , "\n"), "exit") == 0){
         command->builtin = 1;
-    }
-    else if(strcmp(strtok(command->command[0], "\n"), "cd") == 0) {
+    } else if(strcmp(strtok(command->command[0], "\n"), "cd") == 0) {
         command->builtin = 2;
-    }
-    else if(strcmp(strtok(command->command[0], "\n"), "status") == 0) {
+    } else if(strcmp(strtok(command->command[0], "\n"), "status") == 0) {
         command->builtin = 3;
     }
     return command;
@@ -198,34 +333,22 @@ Command * parseCommand(){
 /* ----------------------------------------
     Function: execCommand
 ///////////////////////////////////////////
-Desc: 
+Desc: Determines which command is being
+executed, calls approrpiate function, such
+as one of the built in functions, or the
+function that handles everything else.
 
 Params:
+command: Command * , command to process
 ---------------------------------------- */
+void execCommand(Command * command){    
 
-void execCommand(Command * command){
+    inputRedirect(command);
+    outputRedirect(command);
 
-    // If command meant to be ran in background
-    if(command->background){
-        /* 
-        We want this to execute, but we don't want
-        the parent to wait, either way it's going to fork
-        */
-    }
-    
-    pid_t spawnpid = -5;
-	int childStatus;
-    int childPid;
-    // If fork is successful, the value of spawnpid will be 0 in the child, the child's pid in the parent
-    spawnpid = fork();
-    switch (spawnpid){
-        case -1:
-            perror("fork() failed!");
-            exit(1);
-        case 0:
-            // spawnpid is 0 in the child
-            printf("I am the child. My pid  = %d\n", getpid());
-            switch(command->builtin){
+    // Check if command is built in, if so switch to appropriate
+    if(command->builtin){
+        switch(command->builtin){
                 case 1:
                     freeCommand(command);
                     execExit();
@@ -236,30 +359,62 @@ void execCommand(Command * command){
                 case 3:
                     execStatus(command);
                     break;
-                default:
-                    execOther(command);
-                    break;
+        }
+    } else {
+        // If it's not built in, pass to function to use exec family 
+        execOther(command);
+    }
+}
+
+void inputRedirect(Command * command){
+    int inputFile = -1;
+    for(int i = 0; command->command[i] != NULL; i++){
+        if(strcmp(command->command[i], "<") == 0) {
+            if(command->command[i + 1] != NULL) {
+                inputFile = open(command->command[i + 1], O_RDONLY);
+                if(inputFile == -1) {
+                    perror("failed to open input file");
+                    return;
+                    exit(EXIT_FAILURE);
+                }
+                dup2(inputFile, STDIN_FILENO);
+                close(inputFile);
+                // Shift command arguments to remove "<" and input file name
+                for(int j = i; command->command[j] != NULL; j++){
+                    command->command[j] = command->command[j + 2];
+                }
+            } else{
+                fprintf(stderr, "Syntax error: missing input file name after '<'\n");
+                exit(EXIT_FAILURE);
             }
-            break;
-        default:
-            // spawnpid is the pid of the child
-            printf("I am the parent. My pid  = %d\n", getpid());
-            // If command meant to be ran in background
-            if(command->background){
-                /* 
-                We want this to execute, but we don't want
-                the parent to wait, either way it's going to fork
-                */
-                printf("Command meant for background - parent returning: %d\n", getpid());
-                return;
-            }
-            childPid = waitpid(spawnpid , &childStatus, 0);
-            printf("Parent's waiting is done as the child with pid %d exited\n", childPid);
-            break;
+        }
     }
 }
 
 
+void outputRedirect(Command * command){
+    int outputFile = -1;
+    for (int i = 0; command->command[i] != NULL; i++) {
+        if(strcmp(command->command[i], ">") == 0) {
+            if (command->command[i + 1] != NULL) {
+                outputFile = open(command->command[i + 1], O_WRONLY | O_CREAT | O_TRUNC, 0666);
+                if (outputFile == -1) {
+                    perror("failed to open output file");
+                    exit(EXIT_FAILURE);
+                }
+                dup2(outputFile, STDOUT_FILENO);
+                close(outputFile);
+                // Shift command arguments to remove ">" and output file name
+                for (int j = i; command->command[j] != NULL; j++) {
+                    command->command[j] = command->command[j + 2];
+                }
+            } else {
+                fprintf(stderr, "Syntax error: missing output file name after '>'\n");
+                exit(EXIT_FAILURE);
+            }
+        }
+    }
+}
 
 /* ----------------------------------------
     Function: execExit
@@ -271,6 +426,7 @@ Params: N/A
 ---------------------------------------- */
 void execExit(){
     kill(0, SIGTERM);       // Send signal to all processes 
+    sleep(1);
     exit(EXIT_SUCCESS);     // Exit shell
 }
 
@@ -286,16 +442,24 @@ Params:
 command: Command *
 ---------------------------------------- */
 void execCd(Command * command){
+    /* Problem: when running: 'cd &', we get an error.*/
+
+
     // Check if cd has no other arguments, in which case cd HOME
-    if(strcmp(command->command[1], "\n") == 0 || strcmp(command->command[1], "\0") == 0){ 
+    if(command->argCount < 2){ 
         chdir(getenv("HOME"));
+        #ifdef DEBUG
         system("ls");
+        #endif
         return;
+    } else {
+        if(chdir(strtok(command->command[1], "\n")) != 0){
+            perror("Error with chdir");
     }
-    if(chdir(strtok(command->command[1], "\n")) != 0){
-        perror("Error with chdir");
     }
+    #ifdef DEBUG
     system("ls");
+    #endif
 }
 
 
@@ -312,26 +476,76 @@ Params:
 command: Command *
 ---------------------------------------- */
 void execStatus(Command * command){
-
+    if (WIFEXITED(lastForegroundStatus)) {
+        printf("Exit status: %d\n", WEXITSTATUS(lastForegroundStatus));
+    } else if (WIFSIGNALED(lastForegroundStatus)) {
+        printf("Terminating signal: %d\n", WTERMSIG(lastForegroundStatus));
+    } else {
+        printf("Unknown termination status\n");
+    }
+    fflush(stdout);
 }
 
 
 /* ----------------------------------------
     Function: execOther
 ///////////////////////////////////////////
-Desc: 
+Desc: Uses the execvp function to execute
+all commands that are not "cd", "exit", or
+"status".
 
 Params:
+command: Command * , command to be executed
 ---------------------------------------- */
 void execOther(Command * command){
 
+    /* ERROR: Currently, only execOther commands
+    use fork(), this is not optimal. We'll want
+    to have it forked in the execCommand() function
+    (I think..?)*/
+
+    pid_t spawnpid = fork();
+    if (spawnpid == -1) {
+        perror("fork() failed!");
+        exit(1);
+    } else if (spawnpid == 0) {
+        // Child executes command 
+        execvp(command->command[0], command->command);
+        perror("execvp");
+        exit(1);
+    } else {
+        // Parent checks if meant to be background
+        if (!command->background) {
+            // If not meant to be in background then update the last foreground status
+            int childStatus;
+            waitpid(spawnpid, &childStatus, 0);
+            lastForegroundStatus = childStatus; // Update the lastForegroundStatus variable
+        } else {
+            // Otherwise print the background pid
+            printf("Background PID: %d\n", spawnpid);
+            fflush(stdout);
+        }
+    }
 }
 
+/* ----------------------------------------
+    Function: freeCommand
+///////////////////////////////////////////
+Desc: Frees allocated memory for each command
+given to the smallsh CLT.
 
+Params: 
+command: Command * , command to free
+---------------------------------------- */
 void freeCommand(Command * command){
     for(int i = 0; i < command->argCount ; i++){
+        #ifdef DEBUG
+            printf("Freeing command[%d]: %s\n", i, command->command[i]);
+            fflush(stdout);
+        #endif
         free(command->command[i]);
     }
+    
     free(command);
 }
 
@@ -347,14 +561,14 @@ token: char * , string to change.
 substring: char * , part of string to change
 ---------------------------------------- */
 char* replaceToken(char *token, char *substring){
-    char pidStr[20];                        // String representation for process ID (pid)
-
-    sprintf(pidStr, "%d", getpid());        // Convert process ID to string
-
-    int pidLen = strlen(pidStr);            // Gets length of pid now that it's in string form.
-
-    int restLen = strlen(substring + 2);    // Calculate the length of the rest of the token after the substring
-
+    // String representation for process ID (pid)
+    char pidStr[20];                        
+    // Convert process ID to string
+    sprintf(pidStr, "%d", getpid());        
+    // Gets length of pid now that it's in string form.
+    int pidLen = strlen(pidStr);            
+    // Calculate the length of the rest of the token after the substring
+    int restLen = strlen(substring + 2);    
 
     /*
     Easy to get confused here, this is what's happening:
@@ -364,8 +578,8 @@ char* replaceToken(char *token, char *substring){
     */
     memmove(substring + pidLen, substring + 2, restLen + 1);
 
-    
-    strncpy(substring, pidStr, pidLen);     // Copy the process ID string into the token, in the new space we just created.
+    // Copy the process ID string into the token, in the new space we just created.
+    strncpy(substring, pidStr, pidLen);     
 
     // Check again to see if there are anymore, if so, recurse.
     char * newSubstring = strstr(token, "$$");
