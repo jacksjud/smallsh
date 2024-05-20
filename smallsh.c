@@ -44,8 +44,6 @@ Dev Notes:
 #define MAX_CHARS 2048
 #define MAX_ARGS 512
 
-/* == DEBUG == */
-// #define DEBUG
 
 /* Struct(s) */
 
@@ -81,6 +79,15 @@ int lastForegroundStatus = 0;
 int foregroundOnlyMode = 0;
 
 
+
+/* == DEBUG == */
+#define DEBUG
+// #define DEBUG_SIGINT
+
+
+
+
+
 /* ----------------------------------------
     Function: 
 ///////////////////////////////////////////
@@ -100,7 +107,7 @@ Params: N/A
 ---------------------------------------- */
 int main(){
 
-    #ifdef DEBUG
+    #ifdef DEBUG_TOKEN
     test_replaceToken();
     #endif
     configSIGINT();
@@ -140,15 +147,24 @@ Params:
 ---------------------------------------- */
 void handleSIGINT(int signal){
     if(signal == SIGINT){
-        #ifdef DEBUG
+        #ifdef DEBUG_SIGINT
         printf("\n == SIGINT ignored in parent process (shell): %d\n", getpid());
         fflush(stdout);
         #endif
+        printf("\n");
+        fflush(stdout);
+        return;
     }
-    printf("\n: ");                           // Prompt user interaction, make sure it's output
-    fflush(stdout);
 }
 
+
+/* ----------------------------------------
+    Function: 
+///////////////////////////////////////////
+Desc: 
+
+Params:
+---------------------------------------- */
 void configSIGINT(){
     // Initialize SIGINT_action struct to be empty
     struct sigaction SIGINT_action = {0};
@@ -164,7 +180,7 @@ void configSIGINT(){
     // Install our signal handler
     sigaction(SIGINT, &SIGINT_action, NULL);
 
-    #ifdef DEBUG
+    #ifdef DEBUG_SIGINT
     
     return;
     #endif
@@ -225,6 +241,13 @@ void handleSIGTSTP(int signal){
     return;
 }
 
+/* ----------------------------------------
+    Function: 
+///////////////////////////////////////////
+Desc: 
+
+Params:
+---------------------------------------- */
 void configSIGTSTP(){
     struct sigaction SIGTSTP_action = {0};
     SIGTSTP_action.sa_handler = handleSIGTSTP;
@@ -343,27 +366,52 @@ command: Command * , command to process
 ---------------------------------------- */
 void execCommand(Command * command){    
 
-    inputRedirect(command);
-    outputRedirect(command);
+    // To execute command, fork, parent runs shell
+    pid_t spawnpid = fork();
+    if (spawnpid == -1) {
+        perror("fork() failed!");
+        exit(1);
+    } else if (spawnpid == 0) {
+        // Child executes command 
+        inputRedirect(command);
+        outputRedirect(command);
 
-    // Check if command is built in, if so switch to appropriate
-    if(command->builtin){
-        switch(command->builtin){
-                case 1:
-                    freeCommand(command);
-                    execExit();
-                    break;
-                case 2:
-                    execCd(command);
-                    break;
-                case 3:
-                    execStatus(command);
-                    break;
+        // Check if command is built in, if so switch to appropriate
+        if(command->builtin){
+            switch(command->builtin){
+                    case 1:
+                        freeCommand(command);
+                        execExit();
+                        break;
+                    case 2:
+                        execCd(command);
+                        break;
+                    case 3:
+                        execStatus(command);
+                        break;
+            }
+        } else {
+            // If it's not built in, pass to function to use exec family 
+            execOther(command);
         }
+        printf("Background PID: %d is done\n", spawnpid);
+        fflush(stdout);
     } else {
-        // If it's not built in, pass to function to use exec family 
-        execOther(command);
+        // Parent checks if meant to be background
+        if (!command->background) {
+            // If not meant to be in background then update the last foreground status
+            int childStatus;
+            // Wait and get child status, shell does not return to user control until done.
+            waitpid(spawnpid, &childStatus, 0);
+            lastForegroundStatus = childStatus; // Update the lastForegroundStatus variable
+        } else {
+            // Otherwise print the background pid
+            printf("Background PID: %d\n", spawnpid);
+            fflush(stdout);
+        }
     }
+
+    
 }
 
 void inputRedirect(Command * command){
@@ -504,28 +552,32 @@ void execOther(Command * command){
     to have it forked in the execCommand() function
     (I think..?)*/
 
-    pid_t spawnpid = fork();
-    if (spawnpid == -1) {
-        perror("fork() failed!");
-        exit(1);
-    } else if (spawnpid == 0) {
-        // Child executes command 
-        execvp(command->command[0], command->command);
-        perror("execvp");
-        exit(1);
-    } else {
-        // Parent checks if meant to be background
-        if (!command->background) {
-            // If not meant to be in background then update the last foreground status
-            int childStatus;
-            waitpid(spawnpid, &childStatus, 0);
-            lastForegroundStatus = childStatus; // Update the lastForegroundStatus variable
-        } else {
-            // Otherwise print the background pid
-            printf("Background PID: %d\n", spawnpid);
-            fflush(stdout);
-        }
-    }
+    execvp(command->command[0], command->command);
+    perror("execvp");
+    exit(1);
+
+    // pid_t spawnpid = fork();
+    // if (spawnpid == -1) {
+    //     perror("fork() failed!");
+    //     exit(1);
+    // } else if (spawnpid == 0) {
+    //     // Child executes command 
+    //     execvp(command->command[0], command->command);
+    //     perror("execvp");
+    //     exit(1);
+    // } else {
+    //     // Parent checks if meant to be background
+    //     if (!command->background) {
+    //         // If not meant to be in background then update the last foreground status
+    //         int childStatus;
+    //         waitpid(spawnpid, &childStatus, 0);
+    //         lastForegroundStatus = childStatus; // Update the lastForegroundStatus variable
+    //     } else {
+    //         // Otherwise print the background pid
+    //         printf("Background PID: %d\n", spawnpid);
+    //         fflush(stdout);
+    //     }
+    // }
 }
 
 /* ----------------------------------------
@@ -539,7 +591,7 @@ command: Command * , command to free
 ---------------------------------------- */
 void freeCommand(Command * command){
     for(int i = 0; i < command->argCount ; i++){
-        #ifdef DEBUG
+        #ifdef DEBUG_MEM
             printf("Freeing command[%d]: %s\n", i, command->command[i]);
             fflush(stdout);
         #endif
