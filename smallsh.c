@@ -72,7 +72,6 @@ void test_replaceToken();
 int lastForegroundStatus = 0;
 int foregroundOnlyMode = 0;
 int foregroundProcessRunning = 0;
-int termSig = 0;
 
 
 
