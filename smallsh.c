@@ -8,26 +8,22 @@ CS374 - Operating Systems 1 (OS1)
 Date: 05-14-2024
 
 Description:
+A personal shell that implements a subset of features from
+well known shells, like bash. More exact program goals are
+listed below.
 
 Build Using:
 gcc --std=gnu99 -o smallsh smallsh.c
 
 Program goals:
-
 X   Provide a prompt for running commands
 X   Handle blank lines and comments, which are lines beginning with the # character
 X   Provide expansion for the variable $$
 X   Execute 3 commands exit, cd, and status via code built into the shell
-    Execute other commands by creating new processes using a function from the exec family of functions
-    Support input and output redirection
-    Support running commands in foreground and background processes
-    Implement custom handlers for 2 signals, SIGINT and SIGTSTP
-
-
-Dev Notes:
-* use printenv in terminal to see environment variables
-* 
-
+X   Execute other commands by creating new processes using a function from the exec family of functions
+X   Support input and output redirection
+X   Support running commands in foreground and background processes
+X   Implement custom handlers for 2 signals, SIGINT and SIGTSTP
 */
 
 /* Includes */
@@ -46,7 +42,6 @@ Dev Notes:
 
 
 /* Struct(s) */
-
 typedef struct Command {
     char * command[MAX_ARGS + 1];
     short int skip;
@@ -57,9 +52,8 @@ typedef struct Command {
 
 /* Function Prototypes*/
 void handleSIGINT(int signal);
-void configSIGINT();
 void handleSIGTSTP(int signal);
-void configSIGTSTP();
+void configSIGS();
 Command * parseCommand();
 char* replaceToken(char *, char *);
 void execCommand(Command *);
@@ -77,28 +71,20 @@ void test_replaceToken();
 /* Global Variables */
 int lastForegroundStatus = 0;
 int foregroundOnlyMode = 0;
+int foregroundProcessRunning = 0;
+int termSig = 0;
 
 
 
 /* == DEBUG == */
-#define DEBUG
+// #define DEBUG
 // #define DEBUG_SIGINT
+// #define DEBUG_TOKEN
 
-
-
-
-
-/* ----------------------------------------
-    Function: 
-///////////////////////////////////////////
-Desc: 
-
-Params:
----------------------------------------- */
 
 /* ----------------------------------------
     Function: main
-///////////////////////////////////////////
+===========================================
 
 Desc: main function, handles program starting.
 Creates infinite loop that keeps shell alive.
@@ -106,30 +92,64 @@ Creates infinite loop that keeps shell alive.
 Params: N/A
 ---------------------------------------- */
 int main(){
-
+    // Debugging - Note: prefix 'DEBUG' meant for debugging, no functionality
     #ifdef DEBUG_TOKEN
     test_replaceToken();
     #endif
-    configSIGINT();
-    configSIGTSTP();
 
+    // Configure the signals
+    configSIGS();
 
+    // Infinite loop
     while(1){
         // Parse command 
         Command * command = parseCommand();
+        // Determine if we skip 
         if(command->skip){
             freeCommand(command);
             continue;
         }
+        // Execute the command
         execCommand(command);
+        // Free the command
         freeCommand(command);
     }
     return 0;
 }
 
 /* ----------------------------------------
+    Function: main
+===========================================
+
+Desc: Handler function used for providing
+status and termination signals.
+
+Params: N/A
+---------------------------------------- */
+void handleSIGCHLD(int signal) {
+    pid_t childPid;
+    int childStatus;
+
+    // While valid
+    while ((childPid = waitpid(-1, &childStatus, WNOHANG)) > 0) {
+        // As long as there is a foreground process
+        if (!foregroundProcessRunning) {
+            // Check child status, print approrpiate info.
+            if (WIFEXITED(childStatus)) {
+                printf("\nBackground PID %d is done: exit value %d\n", childPid, WEXITSTATUS(childStatus));
+            } else if (WIFSIGNALED(childStatus)) {
+                printf("\nBackground PID %d is done: terminated by signal %d\n", childPid, WTERMSIG(childStatus));
+            }
+            // User prompt
+            printf(": ");
+            fflush(stdout);
+        }
+    }
+}
+
+/* ----------------------------------------
     Function: handleSIGINT
-///////////////////////////////////////////
+===========================================
 Desc: Makes the shell, i.e., the parent process,
 ignore SIGINT. Any children running as background 
 processes ignore SIGINT. A child running as 
@@ -144,123 +164,108 @@ the signal that killed it's foreground child process
 before prompting the user for the next command.
 
 Params:
+signal: int, signal to handle
 ---------------------------------------- */
 void handleSIGINT(int signal){
-    if(signal == SIGINT){
-        #ifdef DEBUG_SIGINT
-        printf("\n == SIGINT ignored in parent process (shell): %d\n", getpid());
-        fflush(stdout);
-        #endif
-        printf("\n");
-        fflush(stdout);
-        return;
+    if (signal == SIGINT) {
+
+        if (foregroundProcessRunning) {
+            // A foreground process is running, the child process should handle its own termination
+            printf("\n");
+            fflush(stdout);
+        } else {
+            // No foreground process is running, print a new prompt
+            printf("\n: ");
+            fflush(stdout);
+        }
     }
 }
 
 
 /* ----------------------------------------
-    Function: 
-///////////////////////////////////////////
-Desc: 
+    Function: configSIGS
+===========================================
+Desc: Configures signals with appropriate
+handlers.
 
-Params:
+Params: N/A
 ---------------------------------------- */
-void configSIGINT(){
+void configSIGS(){
+// SIGINT
     // Initialize SIGINT_action struct to be empty
     struct sigaction SIGINT_action = {0};
-
-    // Fill out the SIGINT_action struct
-    // Register handleSIGINT as the signal handler
+    // Set handler function
     SIGINT_action.sa_handler = handleSIGINT;
     // Block all catchable signals while handleSIGINT is running
     sigfillset(&SIGINT_action.sa_mask);
     // System auto restarts
     SIGINT_action.sa_flags = SA_RESTART;
-
-    // Install our signal handler
+    // Install signal handler
     sigaction(SIGINT, &SIGINT_action, NULL);
 
-    #ifdef DEBUG_SIGINT
-    
-    return;
-    #endif
+// SIGTSTP
+    // Initialize SIGTSTP_action struct to be emtpy
+    struct sigaction SIGTSTP_action = {0};
+    // Set handler function
+    SIGTSTP_action.sa_handler = handleSIGTSTP;
+    // Block all catchable signals while handleSIGTSTP is running
+    sigfillset(&SIGTSTP_action.sa_mask);
+    // System calls auto restart
+    SIGTSTP_action.sa_flags = SA_RESTART;
+    // Install signal handler
+    sigaction(SIGTSTP, &SIGTSTP_action, NULL);
+
+// SIGCHLD
+    // Initialize SIGCHLD_action struct to be emtpy
+    struct sigaction SIGCHLD_action = {0};
+    // Set handler function 
+    SIGCHLD_action.sa_handler = handleSIGCHLD;
+    // Block all catchable signals while handleSIGCHLD is running
+    sigfillset(&SIGCHLD_action.sa_mask);
+    // System calls auto restart and SIGCHLD won't generate where appropriate
+    SIGCHLD_action.sa_flags = SA_RESTART | SA_NOCLDSTOP;
+    // Install signal handler
+    sigaction(SIGCHLD, &SIGCHLD_action, NULL);
 }
 
 
 /* ----------------------------------------
     Function: handleSIGTSTP
-///////////////////////////////////////////
-Desc: A CTRL-Z command from the keyboard 
-sends a SIGTSTP signal to the parent shell 
-process and all children at the same time 
-(this is a built-in part of Linux).A child, 
-if any, running as a foreground process must 
-ignore SIGTSTP. Any children running as 
-background process must ignore SIGTSTP.
-When the parent process running the shell
-receives SIGTSTP The shell must display an 
-informative message (see below) immediately 
-if it's sitting at the prompt, or immediately 
-after any currently running foreground process 
-has terminated. The shell then enters a state 
-where subsequent commands can no longer be 
-run in the background. In this state, the & 
-operator should simply be ignored, i.e., all 
-such commands are run as if they were 
-foreground processes. If the user sends SIGTSTP 
-again, then your shell will. Display another 
-informative message (see below) immediately
-after any currently running foreground process 
-terminates. The shell then returns back to the 
-normal condition where the & operator is once 
-again honored for subsequent commands, allowing 
-them to be executed in the background. See the
-example below for usage and the exact syntax 
-which you must use for these two informative 
-messages.
+===========================================
+Desc: Handler function for SIGTSTP, displays
+appropriate message, changes foregroundOnlyMode
+variable, and reprints the user prompt.
 
-Params:
+Params: 
+signal: int, signal to be handled
 ---------------------------------------- */
-void handleSIGTSTP(int signal){
+void handleSIGTSTP(int signal) {
+    // Make sure valid signal
     if (signal == SIGTSTP) {
+        // Print appropriate message
         if (foregroundOnlyMode == 0) {
             // Enter foreground-only mode
             foregroundOnlyMode = 1;
-            printf("\nEntering foreground-only mode (& is now ignored)");
+            printf("\nEntering foreground-only mode (& is now ignored)\n");
             fflush(stdout);
-
         } else {
             // Exit foreground-only mode
             foregroundOnlyMode = 0;
-            printf("\nExiting foreground-only mode");
+            printf("\nExiting foreground-only mode\n");
             fflush(stdout);
         }
     }
-    printf("\n: ");                           // Prompt user interaction, make sure it's output
-    fflush(stdout);
-    return;
+    // Check if user prompt needs to be made again
+    if (!foregroundProcessRunning) {
+        printf(": ");
+        fflush(stdout);
+    }
 }
 
-/* ----------------------------------------
-    Function: 
-///////////////////////////////////////////
-Desc: 
-
-Params:
----------------------------------------- */
-void configSIGTSTP(){
-    struct sigaction SIGTSTP_action = {0};
-    SIGTSTP_action.sa_handler = handleSIGTSTP;
-    // Block all catchable signals while handleSIGINT is running
-    sigfillset(&SIGTSTP_action.sa_mask);
-    // System calls auto restart
-    SIGTSTP_action.sa_flags = SA_RESTART;
-    sigaction(SIGTSTP, &SIGTSTP_action, NULL);
-}
 
 /* ----------------------------------------
     Function: parseCommand
-///////////////////////////////////////////
+===========================================
 Desc: Prompts user and gets input, then takes
 it and parses it, splitting it by spaces, and checks
 other factors such as whether it's a comment or a blank
@@ -277,6 +282,7 @@ Command * parseCommand(){
         fprintf(stderr, "Memory allocation failed.\n");
         exit(EXIT_FAILURE);
     }
+    // Default values for the command
     command->argCount = 0;                  // Initially no command arguments
     command->skip = 0;
     command->builtin = 0;
@@ -287,6 +293,7 @@ Command * parseCommand(){
     
     // Represents command given to shell in string form (max size)
     char commandStr[MAX_CHARS];
+    // Gets command as string
     if(fgets(commandStr, MAX_CHARS, stdin) == NULL) {
         freeCommand(command);
         exit(EXIT_FAILURE); // Exit on read failure
@@ -335,14 +342,18 @@ Command * parseCommand(){
     command->command[command->argCount] = NULL;
 
     // Check if background command - look for '&' symbol
-    if (command->argCount > 0 && strcmp(command->command[command->argCount - 1], "&") == 0 && foregroundOnlyMode != 1){
-        command->background = 1;                            // Mark as background
+    if (command->argCount > 0 && strcmp(command->command[command->argCount - 1], "&") == 0){
+        // If in foregroundOnlyMode, skip marking it, but do everything else.
+        if(foregroundOnlyMode != 1){
+            command->background = 1;                            // Mark as background
+        }
         free(command->command[command->argCount - 1]);      // Deallocate that part of the command 
         command->command[command->argCount - 1] = NULL;     // Make old command new pointer to NULL
         command->argCount--;                                // Decrease argCount
     }
 
     // Checks if built in command, give appropriate code
+    // Compares first command argument (stripped of newline chars) for builtin
     if(strcmp(strtok(command->command[0] , "\n"), "exit") == 0){
         command->builtin = 1;
     } else if(strcmp(strtok(command->command[0], "\n"), "cd") == 0) {
@@ -353,9 +364,10 @@ Command * parseCommand(){
     return command;
 }
 
+
 /* ----------------------------------------
     Function: execCommand
-///////////////////////////////////////////
+===========================================
 Desc: Determines which command is being
 executed, calls approrpiate function, such
 as one of the built in functions, or the
@@ -394,16 +406,21 @@ void execCommand(Command * command){
             // If it's not built in, pass to function to use exec family 
             execOther(command);
         }
-        printf("Background PID: %d is done\n", spawnpid);
-        fflush(stdout);
     } else {
         // Parent checks if meant to be background
         if (!command->background) {
+            foregroundProcessRunning = 1;
             // If not meant to be in background then update the last foreground status
             int childStatus;
             // Wait and get child status, shell does not return to user control until done.
             waitpid(spawnpid, &childStatus, 0);
             lastForegroundStatus = childStatus; // Update the lastForegroundStatus variable
+            if (WIFSIGNALED(childStatus)) {
+                int termSignal = WTERMSIG(childStatus);
+                printf("\nTerminated by signal %d\n", termSignal);
+                fflush(stdout);
+            }
+            foregroundProcessRunning = 0;
         } else {
             // Otherwise print the background pid
             printf("Background PID: %d\n", spawnpid);
@@ -414,23 +431,38 @@ void execCommand(Command * command){
     
 }
 
+
+/* ----------------------------------------
+    Function: inputRedirect
+///////////////////////////////////////////
+Desc: Handles input redirects so shell can
+handle the special character '<'
+
+Params: command: Command *, command to search
+---------------------------------------- */
 void inputRedirect(Command * command){
     int inputFile = -1;
+    // Goes through all commands
     for(int i = 0; command->command[i] != NULL; i++){
+        // Looks for '<'
         if(strcmp(command->command[i], "<") == 0) {
+            // If input file is not null
             if(command->command[i + 1] != NULL) {
                 inputFile = open(command->command[i + 1], O_RDONLY);
+                // If open fails, print warning and exit
                 if(inputFile == -1) {
                     perror("failed to open input file");
                     return;
                     exit(EXIT_FAILURE);
                 }
+                // Actual redirection using our new file
                 dup2(inputFile, STDIN_FILENO);
                 close(inputFile);
-                // Shift command arguments to remove "<" and input file name
+                // Shift command arguments to remove '<' and input file name
                 for(int j = i; command->command[j] != NULL; j++){
                     command->command[j] = command->command[j + 2];
                 }
+            // If input file name is null, print error
             } else{
                 fprintf(stderr, "Syntax error: missing input file name after '<'\n");
                 exit(EXIT_FAILURE);
@@ -439,23 +471,36 @@ void inputRedirect(Command * command){
     }
 }
 
+/* ----------------------------------------
+    Function: outputRedirect
+///////////////////////////////////////////
+Desc: Handles output redirects so shell can
+handle the special character '>'
 
+Params: command: Command *, command to search
+---------------------------------------- */
 void outputRedirect(Command * command){
     int outputFile = -1;
+    // Goes through all commands
     for (int i = 0; command->command[i] != NULL; i++) {
+        // Looks for '>'
         if(strcmp(command->command[i], ">") == 0) {
+            // If input file is not null
             if (command->command[i + 1] != NULL) {
                 outputFile = open(command->command[i + 1], O_WRONLY | O_CREAT | O_TRUNC, 0666);
+                // If open fails, print warning and exit
                 if (outputFile == -1) {
                     perror("failed to open output file");
                     exit(EXIT_FAILURE);
                 }
+                // Actual redirection using our new file
                 dup2(outputFile, STDOUT_FILENO);
                 close(outputFile);
                 // Shift command arguments to remove ">" and output file name
                 for (int j = i; command->command[j] != NULL; j++) {
                     command->command[j] = command->command[j + 2];
                 }
+            // If input file name is null, print error
             } else {
                 fprintf(stderr, "Syntax error: missing output file name after '>'\n");
                 exit(EXIT_FAILURE);
@@ -466,7 +511,7 @@ void outputRedirect(Command * command){
 
 /* ----------------------------------------
     Function: execExit
-///////////////////////////////////////////
+===========================================
 Desc: Kills any other processes or jobs that
 the shell has started before it terminates itself.
 
@@ -481,7 +526,7 @@ void execExit(){
 
 /* ----------------------------------------
     Function: execCd
-///////////////////////////////////////////
+===========================================
 Desc: Changes the working directory of smallsh.
 If no arguments are given, it changes to the 
 directory specified in the HOME environment variable 
@@ -513,7 +558,7 @@ void execCd(Command * command){
 
 /* ----------------------------------------
     Function: execStatus
-///////////////////////////////////////////
+===========================================
 Desc: Prints out either the exit status or the 
 terminating signal of the last foreground process 
 ran by the shell. If ran before any foreground 
@@ -524,20 +569,26 @@ Params:
 command: Command *
 ---------------------------------------- */
 void execStatus(Command * command){
+    // Check last foreground process exit status
     if (WIFEXITED(lastForegroundStatus)) {
+        // If exited normally, print exist status
         printf("Exit status: %d\n", WEXITSTATUS(lastForegroundStatus));
+    // Check if terminated by signal
     } else if (WIFSIGNALED(lastForegroundStatus)) {
+        // If so, print appropriate signal number
         printf("Terminating signal: %d\n", WTERMSIG(lastForegroundStatus));
+    // If neither, then the process got terminated in some other way (?)
     } else {
         printf("Unknown termination status\n");
     }
+    // Flush output
     fflush(stdout);
 }
 
 
 /* ----------------------------------------
     Function: execOther
-///////////////////////////////////////////
+===========================================
 Desc: Uses the execvp function to execute
 all commands that are not "cd", "exit", or
 "status".
@@ -547,42 +598,17 @@ command: Command * , command to be executed
 ---------------------------------------- */
 void execOther(Command * command){
 
-    /* ERROR: Currently, only execOther commands
-    use fork(), this is not optimal. We'll want
-    to have it forked in the execCommand() function
-    (I think..?)*/
-
+    // Command is executed
     execvp(command->command[0], command->command);
+    // If done correctly this will never be executed
     perror("execvp");
     exit(1);
-
-    // pid_t spawnpid = fork();
-    // if (spawnpid == -1) {
-    //     perror("fork() failed!");
-    //     exit(1);
-    // } else if (spawnpid == 0) {
-    //     // Child executes command 
-    //     execvp(command->command[0], command->command);
-    //     perror("execvp");
-    //     exit(1);
-    // } else {
-    //     // Parent checks if meant to be background
-    //     if (!command->background) {
-    //         // If not meant to be in background then update the last foreground status
-    //         int childStatus;
-    //         waitpid(spawnpid, &childStatus, 0);
-    //         lastForegroundStatus = childStatus; // Update the lastForegroundStatus variable
-    //     } else {
-    //         // Otherwise print the background pid
-    //         printf("Background PID: %d\n", spawnpid);
-    //         fflush(stdout);
-    //     }
-    // }
 }
+
 
 /* ----------------------------------------
     Function: freeCommand
-///////////////////////////////////////////
+===========================================
 Desc: Frees allocated memory for each command
 given to the smallsh CLT.
 
@@ -590,20 +616,22 @@ Params:
 command: Command * , command to free
 ---------------------------------------- */
 void freeCommand(Command * command){
+    // Goes through all commands
     for(int i = 0; i < command->argCount ; i++){
         #ifdef DEBUG_MEM
             printf("Freeing command[%d]: %s\n", i, command->command[i]);
             fflush(stdout);
         #endif
+        // Free individual command
         free(command->command[i]);
     }
-    
+    // Free command struct mem alloc
     free(command);
 }
 
 /* ----------------------------------------
     Function: replaceToken
-///////////////////////////////////////////
+===========================================
 Desc: Takes pointer, token, and replaces the location
 specified by the substring pointer with the pid.
 It checks for multiple occurances.
@@ -641,7 +669,7 @@ char* replaceToken(char *token, char *substring){
 }
 
 
-// Tester function 
+// Tester function - Simply for debugging
 void test_replaceToken() {
     char token[] = "TEST$$TEST$$$";
     char *substring = strstr(token, "$$");
