@@ -117,13 +117,14 @@ int main(){
 }
 
 /* ----------------------------------------
-    Function: main
+    Function: handleSIGCHLD
 ===========================================
 
 Desc: Handler function used for providing
 status and termination signals.
 
-Params: N/A
+Params: 
+signal: int, signal to handle
 ---------------------------------------- */
 void handleSIGCHLD(int signal) {
     pid_t childPid;
@@ -161,6 +162,9 @@ foreground process is killed by a signal, the
 parent immediately prints out the number of 
 the signal that killed it's foreground child process 
 before prompting the user for the next command.
+Prints appropriate newline or newline + user prompt
+depending on whether there is a foregorund process
+actively running.
 
 Params:
 signal: int, signal to handle
@@ -414,6 +418,7 @@ void execCommand(Command * command){
             // Wait and get child status, shell does not return to user control until done.
             waitpid(spawnpid, &childStatus, 0);
             lastForegroundStatus = childStatus; // Update the lastForegroundStatus variable
+            // If the child is signaled to stop, print info
             if (WIFSIGNALED(childStatus)) {
                 int termSignal = WTERMSIG(childStatus);
                 printf("\nTerminated by signal %d\n", termSignal);
